@@ -1,7 +1,6 @@
-streamlit
-streamlit-webrtc
-torch
-numpy
-av
-pyttsx3
-git+https://github.com/openai/whisper.git
+streamlit==1.25.0
+streamlit-webrtc==0.47.0
+git+https://github.com/openai/whisper.git@v20230616
+torch>=1.13.1
+numpy==1.24.4
+av==10.0.0

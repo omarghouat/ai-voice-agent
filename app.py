@@ -1,42 +1,72 @@
 import streamlit as st
-from utils.stt import AudioProcessor
-from utils.llm import generate_response
-from utils.tts import speak
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, ClientSettings
+from streamlit_webrtc import webrtc_streamer
 import whisper
+import av
+import numpy as np
+import traceback
 
-st.set_page_config(page_title="AI Voice Agent - Health Tourism", layout="centered")
-st.title("🎤 AI Voice Agent for Health Tourism")
-st.markdown("Ask about medical travel, clinics, procedures, visas, and more.")
+st.set_page_config(page_title="Whisper + WebRTC Debug Demo")
+
+st.title("🎤 Whisper Speech-to-Text with Debugging")
 
 @st.cache_resource
 def load_whisper_model():
-    return whisper.load_model("base")
+    st.write("Loading Whisper model...")
+    model = whisper.load_model("base")
+    st.write("Whisper model loaded.")
+    return model
 
 model = load_whisper_model()
 
-audio_processor = AudioProcessor(model=model)
+class WhisperAudioProcessor:
+    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
+        try:
+            # Convert audio frame to numpy array (float32 mono)
+            audio = frame.to_ndarray(format="flt32", layout="mono").flatten()
+            st.session_state["debug_audio_shape"] = audio.shape
+            st.session_state["debug_audio_dtype"] = str(audio.dtype)
+            st.session_state["debug_audio_min"] = np.min(audio)
+            st.session_state["debug_audio_max"] = np.max(audio)
+
+            # Resample from 48kHz to 16kHz (required by Whisper)
+            audio_16k = whisper.audio.resample_audio(audio, orig_sr=48000, target_sr=16000)
+            st.session_state["debug_audio16k_shape"] = audio_16k.shape
+
+            # Run Whisper inference
+            result = model.transcribe(audio_16k, fp16=False)
+            st.session_state["transcription"] = result["text"]
+            st.session_state["debug_last_inference"] = "Success"
+
+        except Exception as e:
+            st.session_state["debug_last_inference"] = f"Error: {e}"
+            st.session_state["debug_traceback"] = traceback.format_exc()
+
+        return frame
+
+# Initialize debug keys
+for key in ["transcription", "debug_audio_shape", "debug_audio_dtype", "debug_audio_min", "debug_audio_max", "debug_audio16k_shape", "debug_last_inference", "debug_traceback"]:
+    if key not in st.session_state:
+        st.session_state[key] = "N/A"
 
 webrtc_ctx = webrtc_streamer(
-    key="speech-to-text",
-    mode=WebRtcMode.SENDRECV,
-    in_audio_enabled=True,
-    client_settings=ClientSettings(
-        media_stream_constraints={"audio": True, "video": False},
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-    ),
-    audio_receiver_size=1024,
-    on_audio_frame=audio_processor.recv
+    key="whisper_debug",
+    mode="recvonly",
+    audio_processor_factory=WhisperAudioProcessor,
+    media_stream_constraints={"audio": True, "video": False},
+    async_processing=True,
 )
 
-if audio_processor.transcription:
-    user_input = audio_processor.transcription
-    st.write("🗣️ You said:", user_input)
+st.markdown("### Transcription")
+st.write(st.session_state["transcription"])
 
-    with st.spinner("🧠 Thinking..."):
-        ai_response = generate_response(user_input)
-        st.write("🤖 Assistant:", ai_response)
+st.markdown("### Debug info")
+st.write(f"Audio shape: {st.session_state['debug_audio_shape']}")
+st.write(f"Audio dtype: {st.session_state['debug_audio_dtype']}")
+st.write(f"Audio min value: {st.session_state['debug_audio_min']}")
+st.write(f"Audio max value: {st.session_state['debug_audio_max']}")
+st.write(f"Resampled audio shape (16kHz): {st.session_state['debug_audio16k_shape']}")
+st.write(f"Last inference status: {st.session_state['debug_last_inference']}")
 
-        with st.spinner("🔊 Speaking..."):
-            speak(ai_response)
-            st.audio("output.wav", format="audio/wav")
+if st.session_state["debug_last_inference"].startswith("Error"):
+    st.markdown("#### Traceback")
+    st.code(st.session_state["debug_traceback"])
